@@ -1,0 +1,1 @@
+// TS interface matching Python schema

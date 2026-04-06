@@ -1,0 +1,1 @@
+// Simplified UI using hooks and components
