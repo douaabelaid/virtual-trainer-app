@@ -2,8 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import { StyleSheet, Text, View, SafeAreaView, Dimensions, Button, TouchableOpacity } from 'react-native';
 import Svg, { Circle, Line } from 'react-native-svg';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Speech from 'expo-speech';
 
-const WS_URL = 'ws://10.114.161.12:8765'; // Your PC's Local IP address
+const WS_URL = 'ws://192.168.1.20:8768/ws'; // Your PC's Local IP address
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -13,9 +14,43 @@ export default function App() {
   const [useMock, setUseMock] = useState(false); // Changed to false to test real connection
   const ws = useRef<WebSocket | null>(null);
   const cameraRef = useRef<any>(null);
+  const isCapturing = useRef<boolean>(false);
+  const lastSpokenRef = useRef<string>('');
   
   const [permission, requestPermission] = useCameraPermissions();
   const frameInterval = useRef<any>(null);
+
+  useEffect(() => {
+    // Check if we have feedback and speak the most important warning
+    if (exerciseState?.feedback_flags && exerciseState.feedback_flags.length > 0) {
+      const primaryFlag = exerciseState.feedback_flags[0];
+      if (primaryFlag.message !== lastSpokenRef.current) {
+        // Find an English voice, preferably a natural sounding one
+        Speech.getAvailableVoicesAsync().then(voices => {
+          const enVoices = voices.filter(v => v.language.includes('en-US') || v.language.includes('en-GB'));
+          // Force a highly natural Siri/Google female speech model
+          const selectedVoice = enVoices.find(v => 
+            v.name.includes('Samantha') || 
+            v.name.includes('Siri') || 
+            v.name.includes('Aaron') ||
+            v.name.includes('Google') || 
+            v.quality === 'Enhanced'
+          ) || enVoices[0];
+          
+          Speech.speak(primaryFlag.message, {
+            pitch: 1.0,
+            voice: selectedVoice ? selectedVoice.identifier : undefined,
+            language: 'en-US' 
+          });
+        });
+        
+        lastSpokenRef.current = primaryFlag.message;
+      }
+    } else {
+      // Allow the same warning to be spoken again if form was corrected then broken again
+      lastSpokenRef.current = '';
+    }
+  }, [exerciseState?.feedback_flags]);
 
   useEffect(() => {
     let reconnectTimeout: any;
@@ -117,18 +152,22 @@ export default function App() {
   const startStreamingFrames = () => {
     if (frameInterval.current) return;
     
-    // Simulate streaming frames every 150ms (~6.6 fps) to the backend
-    // High FPS in pure RN JS can bridge-block, adjust as necessary
+    // Use an increased interval and a lock to prevent concurrent captures
     frameInterval.current = setInterval(async () => {
+      if (isCapturing.current) return;
+      
       if (cameraRef.current && ws.current?.readyState === WebSocket.OPEN) {
         try {
+          isCapturing.current = true;
           const photo = await cameraRef.current.takePictureAsync({
             base64: true,
-            quality: 0.2, // Lower quality for faster transmission
-            scale: 0.5,
+            quality: 0.1, // Even lower quality
+            scale: 0.2,   // Half the size again
+            shutterSound: false, // Turn off the shutter sound
+            skipProcessing: true, // Avoid processing delays and auto-shutter
           });
           
-          if (photo?.base64) {
+          if (photo?.base64 && ws.current) {
             ws.current.send(JSON.stringify({ 
               type: 'frame', 
               data: photo.base64 
@@ -136,9 +175,11 @@ export default function App() {
           }
         } catch (error) {
           console.error("Frame capture error:", error);
+        } finally {
+          isCapturing.current = false;
         }
       }
-    }, 150);
+    }, 250); // Increased interval to 250ms (4 FPS) to give camera time to recover
   };
 
   const stopStreamingFrames = () => {
